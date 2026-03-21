@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Dashboard for your Smart Home Door Lock System. Review visitors and generate OTPs securely.">
+    <title>Smart Door Lock - Home Dashboard</title>
+    <!-- Modern Typography: Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Premium UI Ambient Orbs -->
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
+    <div class="ambient-orb orb-3"></div>
+
+    <main class="dashboard-wrapper">
+        <!-- Top App Bar -->
+        <header class="navbar">
+            <div class="brand">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 12H5V20C5 21.1046 5.89543 22 7 22H17C18.1046 22 19 21.1046 19 20V12H22L12 2Z" stroke="url(#paint0_linear)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M9 22V12H15V22" stroke="url(#paint0_linear)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <defs>
+                        <linearGradient id="paint0_linear" x1="12" y1="2" x2="12" y2="22" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="#3b82f6"/>
+                            <stop offset="1" stop-color="#8b5cf6"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <h1>SecureEntry</h1>
+            </div>
+            <div class="status-badge" id="app-status">
+                <div class="dot pulsing text-green"></div>
+                <span id="app-status-text">System Live</span>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Content -->
+        <section class="card glassmorphism state-locked" id="main-panel">
+            <div class="state-icon-wrapper" id="icon-wrapper">
+                <!-- Injected via JS -->
+            </div>
+            
+            <h2 id="main-heading">Secure & Locked</h2>
+            <p id="main-subtext">Everything is quiet. No visitors detected.</p>
+
+            <div class="otp-box hidden" id="otp-wrapper">
+                <p>An OTP code has been securely dispatched to the visitor's mobile device via SMS.</p>
+                <div class="otp-digits" id="otp-digits-container" style="display: none;">
+                    <!-- Digits display removed -->
+                </div>
+                <p class="otp-hint" style="color: var(--success); font-weight: 500;">✓ SMS Sent Successfully</p>
+            </div>
+
+            <div class="controls">
+                <button class="btn btn-gradient hidden" id="btn-allow" onclick="generateOTP()">
+                    Allow Visitor & Generate OTP
+                </button>
+                <button class="btn btn-outline-danger hidden" id="btn-lock" onclick="lockDoor()">
+                    Secure Door Now
+                </button>
+                
+                <!-- For Dev/Testing -->
+                <div class="dev-controls">
+                    <p class="dev-title">Hardware Simulation</p>
+                    <button class="btn btn-ghost" id="btn-sim-bell" onclick="simulateDoorbell()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                        Simulate ESP Doorbell
+                    </button>
+                    <!-- Input to test verifying OTP on behalf of ESP32 -->
+                    <div class="dev-keypad" id="dev-keypad" style="display:none; margin-top: 10px;">
+                        <input type="text" id="sim-keypad-input" placeholder="Enter OTP (Keypad Simulation)" class="sim-input" />
+                        <button class="btn btn-ghost-primary" onclick="simulateESPKeypad()">Submit to API</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Activity Log -->
+        <aside class="log-panel glassmorphism">
+            <h3>Recent Activity</h3>
+            <ul id="log-list" class="log-list">
+                <!-- Logs injected via JS -->
+            </ul>
+        </aside>
+    </main>
+
+    <!-- Templates for SVGs -->
+    <template id="svg-locked">
+        <svg class="state-svg is-locked" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            <circle cx="12" cy="16" r="1"></circle>
+        </svg>
+    </template>
+    <template id="svg-visitor">
+        <svg class="state-svg is-visitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2A9 9 0 0 0 3 11v11l4-4 3 3 3-3 3 3 5-5v-5a9 9 0 0 0-9-9z"></path>
+            <circle cx="9" cy="9" r="2"></circle>
+            <circle cx="15" cy="9" r="2"></circle>
+        </svg>
+    </template>
+    <template id="svg-otp">
+        <svg class="state-svg is-otp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+        </svg>
+    </template>
+    <template id="svg-unlocked">
+        <svg class="state-svg is-unlocked" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>
+            <circle cx="12" cy="16" r="1"></circle>
+        </svg>
+    </template>
+
+    <script src="script.js"></script>
+</body>
+</html>
