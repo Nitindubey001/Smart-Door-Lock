@@ -1,0 +1,16 @@
+{
+  "name": "smart-door-lock-otp",
+  "version": "1.0.0",
+  "description": "Smart Door Lock system with ESP32 integration and OTP external verification via api.otp.dev",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "esp32",
+    "smart-home"
+  ],
+  "author": "Nitin",
+  "license": "ISC"
+}
