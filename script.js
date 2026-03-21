@@ -1,4 +1,9 @@
-const API_URL = 'http://172.26.57.104:3000/api';
+// MQTT Configuration for Public Broker
+const MQTT_BROKER = 'broker.hivemq.com';
+const MQTT_PORT = 8884; // Secure WebSockets port
+const CLIENT_ID = 'WebDashboard_' + Math.random().toString(16).substr(2, 8);
+const TOPIC_STATE = 'nitindubey/door/state';
+const TOPIC_COMMAND = 'nitindubey/door/command';
 
 // UI Elements
 const iconWrapper = document.getElementById('icon-wrapper');
@@ -12,46 +17,80 @@ const logList = document.getElementById('log-list');
 const mainPanel = document.getElementById('main-panel');
 const devKeypad = document.getElementById('dev-keypad');
 
-// State Management
-let currentState = 'LOCKED'; // Init
-let pollingInterval = null;
+let client;
+let currentState = 'LOCKED';
 
 // Initialization
 function init() {
-    addLog('System started', 'info');
+    addLog('Connecting to MQTT Cloud Broker...', 'info');
     updateUI('LOCKED');
     
-    // Start polling the server for state changes
-    pollingInterval = setInterval(pollServer, 2000);
+    // Setup MQTT Client
+    client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, "/mqtt", CLIENT_ID);
+    
+    // Set callbacks
+    client.onConnectionLost = onConnectionLost;
+    client.onMessageArrived = onMessageArrived;
+
+    // Connect
+    client.connect({
+        useSSL: true,
+        onSuccess: onConnect,
+        onFailure: (err) => {
+            addLog('MQTT Connection Failed! Retrying...', 'warning');
+            console.error(err);
+            setTimeout(init, 5000);
+        }
+    });
 }
 
-// Fetch the state from ESP/Backend
-async function pollServer() {
-    try {
-        const res = await fetch(`${API_URL}/status`);
-        if (!res.ok) throw new Error('Network response was not ok');
-        const data = await res.json();
-        
-        // Only update UI if state changes, otherwise we'd rerender too much
-        if (data.state !== currentState) {
-            updateUI(data.state, data.otp);
+function onConnect() {
+    addLog('Connected to Cloud via HiveMQ', 'success');
+    client.subscribe(TOPIC_STATE);
+}
+
+function onConnectionLost(responseObject) {
+    if (responseObject.errorCode !== 0) {
+        addLog('Connection lost! Reconnecting...', 'warning');
+        setTimeout(init, 2000);
+    }
+}
+
+// When the ESP32 publishes a state change
+function onMessageArrived(message) {
+    const topic = message.destinationName;
+    const payload = message.payloadString;
+    
+    if (topic === TOPIC_STATE) {
+        if (payload !== currentState) {
+            updateUI(payload);
             
-            // Auto logging based on state change
-            if (data.state === 'SOMEONE_AT_DOOR') {
+            if (payload === 'SOMEONE_AT_DOOR') {
                 addLog('Visitor rang the doorbell! 🔔', 'warning');
-            } else if (data.state === 'UNLOCKED') {
+            } else if (payload === 'UNLOCKED') {
                 addLog('Visitor entered correct OTP. Door Unlocked 🔓', 'success');
-            } else if (data.state === 'LOCKED') {
+            } else if (payload === 'LOCKED') {
                 addLog('Door secured 🔒', 'info');
+            } else if (payload === 'OTP_GENERATED') {
+                addLog('ESP32 successfully dispatched OTP via SMS.', 'info');
             }
         }
-    } catch (error) {
-        console.error('Polling error:', error);
+    }
+}
+
+// Helper to send commands to the ESP32
+function sendCommand(cmdStr) {
+    if (client.isConnected()) {
+        const message = new Paho.MQTT.Message(cmdStr);
+        message.destinationName = TOPIC_COMMAND;
+        client.send(message);
+    } else {
+        alert("Not connected to Cloud! Wait a moment.");
     }
 }
 
 // Update the entire UI based on string state
-function updateUI(stateName, otpVal = null) {
+function updateUI(stateName) {
     currentState = stateName;
     
     // Reset Classes & Hidden
@@ -88,7 +127,7 @@ function updateUI(stateName, otpVal = null) {
             mainSubtext.textContent = 'Awaiting visitor to enter the code on the keypad...';
             btnLock.classList.remove('hidden');
             otpWrapper.classList.remove('hidden');
-            devKeypad.style.display = 'block'; // Show dev keypad input
+            devKeypad.style.display = 'block';
             break;
 
         case 'UNLOCKED':
@@ -108,7 +147,6 @@ function getStateClass(s) {
     return 'state-locked';
 }
 
-// Format time
 function formatTime() {
     const now = new Date();
     let h = now.getHours();
@@ -117,83 +155,40 @@ function formatTime() {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-// Add event to DOM log
 function addLog(msg, type = 'info') {
     const li = document.createElement('li');
     li.innerHTML = `<span>${msg}</span> <span class="time">${formatTime()}</span>`;
-    
     if (type === 'warning') li.style.color = 'var(--warning)';
     if (type === 'success') li.style.color = 'var(--success)';
-    
-    logList.prepend(li); // add to top
+    logList.prepend(li);
 }
 
-// --- API ACTIONS ---
+// --- CLOUD ACTIONS ---
 
 // Action: Generate OTP
-async function generateOTP() {
-    try {
-        const res = await fetch(`${API_URL}/generate-otp`, { method: 'POST' });
-        const data = await res.json();
-        if (data.success) {
-            addLog(`Triggered OTP SMS for visitor (+91 8982207277)`, 'info');
-            // We do NOT updateUI here immediately; the polling loop will catch the change and animate gracefully.
-            // But we can trigger an immediate poll to speed it up.
-            pollServer();
-        } else {
-            alert(data.message);
-        }
-    } catch (e) {
-        console.error(e);
-    }
+function generateOTP() {
+    addLog(`Sending authorize command to ESP32...`, 'info');
+    sendCommand("GENERATE_OTP");
 }
 
 // Action: Lock Door (Resets State)
-async function lockDoor() {
-    try {
-        const res = await fetch(`${API_URL}/lock`, { method: 'POST' });
-        const data = await res.json();
-        if (data.success) {
-            pollServer();
-        }
-    } catch (e) {
-        console.error(e);
-    }
+function lockDoor() {
+    sendCommand("LOCK");
 }
 
 // Action: Simulate Doorbell (ESP Button Press)
-async function simulateDoorbell() {
-    try {
-        await fetch(`${API_URL}/doorbell`, { method: 'GET' });
-        pollServer();
-    } catch (e) {
-        console.error(e);
-    }
+function simulateDoorbell() {
+    sendCommand("SIMULATE_BELL");
 }
 
 // Action: Simulate ESP Keypad Entry
-async function simulateESPKeypad() {
+function simulateESPKeypad() {
     const keypadInput = document.getElementById('sim-keypad-input').value;
     if (!keypadInput) return;
     
-    try {
-        const res = await fetch(`${API_URL}/verify-otp`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ otp: keypadInput })
-        });
-        const data = await res.json();
-        
-        if (data.success) {
-             pollServer();
-             document.getElementById('sim-keypad-input').value = '';
-        } else {
-            addLog(`Failed OTP attempt via simulated keypad`, 'warning');
-            alert('Invalid OTP!');
-        }
-    } catch (e) {
-        console.error(e);
-    }
+    // Instead of verifying on the web, send the keypad input straight to ESP32
+    sendCommand("KEYPAD:" + keypadInput);
+    document.getElementById('sim-keypad-input').value = '';
 }
 
 // Start app
