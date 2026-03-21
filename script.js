@@ -1,4 +1,4 @@
-const API_URL = '/api';
+const API_URL = 'http://172.26.57.104:3000/api';
 
 // UI Elements
 const iconWrapper = document.getElementById('icon-wrapper');
