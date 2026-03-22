@@ -2,23 +2,13 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ESP32Servo.h>
-#include <ArduinoJson.h>
-#include <PubSubClient.h>
 
 // ── Wi-Fi Credentials ─────────────────────────────────────────────────────
 const char* ssid     = "samosa";
 const char* password = "nitin@123";
 
-// ── MQTT Broker (HiveMQ Public) ───────────────────────────────────────────
-const char* mqtt_server = "broker.hivemq.com";
-const int mqtt_port = 1883;
-
-const char* TOPIC_STATE = "nitindubey/door/state";
-const char* TOPIC_COMMAND = "nitindubey/door/command";
-
-// ── API.OTP.DEV Credentials ───────────────────────────────────────────────
-const String OTP_API_KEY = "95a549d2e50908342cf9bdc3b769a142";
-const String OTP_PHONE = "918982207277";
+// ── Ngrok Backend ─────────────────────────────────────────────────────────
+const String NGROK_URL = "https://82ed-2409-40c4-184-cdb4-cd54-c2f8-19fe-7b61.ngrok-free.app"; // <-- Automatically Generated
 
 // ── Servo Configuration ───────────────────────────────────────────────────
 Servo doorServo;
@@ -29,44 +19,19 @@ const int UNLOCKED_ANGLE = 90;
 // ── Internal State ────────────────────────────────────────────────────────
 enum SystemState { IDLE, WAITING_FOR_OTP };
 SystemState currentState = IDLE;
+int otpAttemptsLocal = 0;
 
-// ── Objects ───────────────────────────────────────────────────────────────
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
+unsigned long lastPollTime = 0;
+const unsigned long pollInterval = 1000; // Poll every 1 second
 
 // ── Function Declarations ─────────────────────────────────────────────────
 void connectToWiFi();
-void connectToMQTT();
-void requestOTP();
-void verifyOTP(String otp);
+void pollBackend();
+void processCommand(String message);
+void submitOTP(String otp);
 void unlockDoor();
 void lockDoor();
 void publishState(const char* stateMsg);
-
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String message = "";
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  
-  Serial.print("[MQTT] Received command: ");
-  Serial.println(message);
-
-  if (message == "GENERATE_OTP") {
-    requestOTP();
-  } 
-  else if (message == "LOCK") {
-    lockDoor();
-  }
-  else if (message == "SIMULATE_BELL") {
-    Serial.println("[ESP] Web commanded doorbell simulation.");
-    publishState("SOMEONE_AT_DOOR");
-  }
-  else if (message.startsWith("KEYPAD:")) {
-    String otpInput = message.substring(7); // "KEYPAD:1234" -> "1234"
-    verifyOTP(otpInput);
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 void setup() {
@@ -77,23 +42,26 @@ void setup() {
   
   connectToWiFi();
   
-  mqttClient.setServer(mqtt_server, mqtt_port);
-  mqttClient.setCallback(mqttCallback);
-
-  lockDoor();
+  lockDoor(); // Sets initial condition and publishes it
 
   Serial.println("==========================================");
-  Serial.println("Smart Door MQTT System Initialized");
+  Serial.println("Smart Door HTTP Polling System Initialized");
   Serial.println("Type 'hi' and press Enter to trigger doorbell manually");
   Serial.println("==========================================");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 void loop() {
-  if (!mqttClient.connected()) {
-    connectToMQTT();
+  // Reconnect WiFi if needed
+  if (WiFi.status() != WL_CONNECTED) {
+    connectToWiFi();
   }
-  mqttClient.loop();
+
+  // Poll Backend periodically
+  if (millis() - lastPollTime >= pollInterval) {
+    lastPollTime = millis();
+    pollBackend();
+  }
 
   // Read Serial Monitor for manual ESP32 interaction
   if (Serial.available() > 0) {
@@ -104,13 +72,13 @@ void loop() {
       if (currentState == IDLE) {
         if (input.equalsIgnoreCase("hi")) {
           Serial.println("[ESP] Doorbell triggered locally! Publishing SOMEONE_AT_DOOR...");
-          publishState("SOMEONE_AT_DOOR"); // Alerts the web dashboard
+          publishState("SOMEONE_AT_DOOR"); 
         } else {
           Serial.println("[ESP] Unknown command. Type 'hi' to ring doorbell.");
         }
       } else if (currentState == WAITING_FOR_OTP) {
-        Serial.println("[ESP] Verifying OTP: " + input);
-        verifyOTP(input);
+        Serial.println("[ESP] Submitting OTP to Server for verification: " + input);
+        submitOTP(input);
       }
     }
   }
@@ -133,103 +101,104 @@ void connectToWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-void connectToMQTT() {
-  while (!mqttClient.connected()) {
-    Serial.print("Connecting to HiveMQ MQTT Broker...");
-    // Create a random client ID
-    String clientId = "ESP32Door_" + String(random(0xffff), HEX);
-    
-    // Attempt to connect (HiveMQ public broker needs no auth)
-    if (mqttClient.connect(clientId.c_str())) {
-      Serial.println(" connected!");
-      mqttClient.subscribe(TOPIC_COMMAND); 
-      publishState("LOCKED"); // Ensure dashboard knows we are online
-    } else {
-      Serial.print(" failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
+// ── HTTP Polling ──────────────────────────────────────────────────────────
+void pollBackend() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure secureClient;
+  secureClient.setInsecure();
+  HTTPClient http;
+
+  http.begin(secureClient, NGROK_URL + "/api/esp/poll");
+  int httpCode = http.GET();
+  
+  String cmd = "";
+  if (httpCode == 200) {
+    cmd = http.getString();
+  }
+  http.end(); // Close connection FIRST to free up ESP32 SSL memory!
+
+  if (cmd != "NONE" && cmd.length() > 0) {
+    Serial.println("[ESP] Received command from Backend: " + cmd);
+    processCommand(cmd);
+  }
+}
+
+void processCommand(String message) {
+  if (message == "UNLOCK") {
+    currentState = IDLE;
+    unlockDoor();
+  } 
+  else if (message == "LOCK") {
+    currentState = IDLE;
+    lockDoor();
+  }
+  else if (message == "SIMULATE_BELL") {
+    Serial.println("[ESP] Web commanded doorbell simulation.");
+    publishState("SOMEONE_AT_DOOR");
+  }
+  else if (message == "WAITING_FOR_OTP") {
+    Serial.println("[ESP] Server sent OTP via SMS. Awaiting Keypad/Serial input...");
+    currentState = WAITING_FOR_OTP;
+    otpAttemptsLocal = 0; // Reset local attempts counter
   }
 }
 
 void publishState(const char* stateMsg) {
-  if (mqttClient.connected()) {
-    mqttClient.publish(TOPIC_STATE, stateMsg);
-  }
-}
-
-// ── Request OTP from server ───────────────────────────────────────────────
-void requestOTP() {
   if (WiFi.status() != WL_CONNECTED) return;
-
-  Serial.println("[ESP] Calling api.otp.dev to send SMS...");
-  publishState("OTP_GENERATED"); // Tell web to show "Sent" UI immediately
-
+  
   WiFiClientSecure secureClient;
   secureClient.setInsecure();
   HTTPClient http;
   
-  http.begin(secureClient, "https://api.otp.dev/v1/verifications");
+  http.begin(secureClient, NGROK_URL + "/api/esp/state");
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("accept", "application/json");
-  http.addHeader("X-OTP-Key", OTP_API_KEY.c_str());
-
-  // Manually construct JSON to avoid dynamic memory limits
-  String payload = "{\"data\":{\"channel\":\"sms\",\"sender\":\"896ee6b2-2a0b-4922-bbd9-39cafc99140b\",\"phone\":\"" + OTP_PHONE + "\",\"template\":\"a7fe47ae-ccc8-4ffb-adaa-15d557704036\",\"code_length\":4}}";
   
+  // Format JSON payload manually
+  String payload = "{\"state\":\"" + String(stateMsg) + "\"}";
   int code = http.POST(payload);
-
-  if (code > 0) {
-    if (code == 200 || code == 201) {
-      Serial.println("[ESP] SMS Sent successfully via external API!");
-      currentState = WAITING_FOR_OTP;
-    } else {
-      Serial.print("[ESP] API error: HTTP ");
-      Serial.println(code);
-      Serial.println(http.getString());
-      publishState("LOCKED"); // Revert UI
-    }
-  } else {
-    Serial.print("[ESP] Request failed: ");
+  
+  if(code <= 0) {
+    Serial.print("[ESP] Failed to publish state: ");
     Serial.println(http.errorToString(code));
-    publishState("LOCKED"); // Revert UI
   }
-
   http.end();
 }
 
-// ── Verify OTP entered on keypad ──────────────────────────────────────────
-void verifyOTP(String otp) {
+// ── Securely Check OTP Against Server ─────────────────────────────────────
+void submitOTP(String otp) {
   if (WiFi.status() != WL_CONNECTED) return;
-
+  
   WiFiClientSecure secureClient;
   secureClient.setInsecure();
   HTTPClient http;
   
-  String url = "https://api.otp.dev/v1/verifications?code=" + otp + "&phone=" + OTP_PHONE;
-  http.begin(secureClient, url);
-  http.addHeader("accept", "application/json");
-  http.addHeader("X-OTP-Key", OTP_API_KEY.c_str());
+  http.begin(secureClient, NGROK_URL + "/api/esp/verify");
+  http.addHeader("Content-Type", "application/json");
+  
+  Serial.println("[ESP] Verifying OTP with centralized Ubuntu Server...");
 
-  int code = http.GET();
-
+  String payload = "{\"otp\":\"" + otp + "\"}";
+  int code = http.POST(payload);
+  
   if (code > 0) {
     String response = http.getString();
-    
-    // Check if the JSON returned actual verification items
-    if (code == 200 && response.indexOf("message_id") > 0) {
-      Serial.println("[ESP] OTP correct! Unlocking door...");
-      unlockDoor();
+    if(response == "VERIFIED") {
+        Serial.println("[ESP] Server verified OTP securely. Processing UNLOCK command...");
+        currentState = IDLE; 
+    } else if(response == "MAX_TRIES") {
+        Serial.println("[ESP] 3 Invalid OTP attempts reached! Door stays Locked and Dashboard reset.");
+        currentState = IDLE;
     } else {
-      Serial.println("[ESP] Wrong OTP! Response: " + response);
-      publishState("SOMEONE_AT_DOOR"); // Reset dashboard
+        otpAttemptsLocal++;
+        Serial.printf("[ESP] Invalid OTP! Attempt %d of 3. Try again.\n", otpAttemptsLocal);
+        // Remain in WAITING_FOR_OTP state so user can enter again
     }
   } else {
-    Serial.println("[ESP] Verification request failed");
+    Serial.print("[ESP] Failed to submit OTP: ");
+    Serial.println(http.errorToString(code));
+    currentState = IDLE;
   }
-
-  currentState = IDLE;
   http.end();
 }
 
@@ -237,7 +206,6 @@ void verifyOTP(String otp) {
 void unlockDoor() {
   doorServo.write(UNLOCKED_ANGLE);
   Serial.println("[ESP] Door UNLOCKED");
-  publishState("UNLOCKED");
   
   delay(5000);
   
@@ -248,5 +216,4 @@ void unlockDoor() {
 void lockDoor() {
   doorServo.write(LOCKED_ANGLE);
   Serial.println("[ESP] Door LOCKED");
-  publishState("LOCKED");
 }

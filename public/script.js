@@ -1,9 +1,12 @@
-// MQTT Configuration for Public Broker
-const MQTT_BROKER = 'broker.hivemq.com';
-const MQTT_PORT = 8884; // Secure WebSockets port
-const CLIENT_ID = 'WebDashboard_' + Math.random().toString(16).substr(2, 8);
-const TOPIC_STATE = 'nitindubey/door/state';
-const TOPIC_COMMAND = 'nitindubey/door/command';
+// Native SSE (Server-Sent Events) and Fetch API
+// Completely removed MQTT Dependency!
+let currentState = 'LOCKED';
+
+// Auto-detect backend URL: If hosted on GitHub Pages or file:// fallback to Ngrok URL
+let BACKEND_URL = '';
+if (window.location.protocol === 'file:' || window.location.hostname.includes('github.io')) {
+    BACKEND_URL = 'https://82ed-2409-40c4-184-cdb4-cd54-c2f8-19fe-7b61.ngrok-free.app';
+}
 
 // UI Elements
 const iconWrapper = document.getElementById('icon-wrapper');
@@ -17,76 +20,70 @@ const logList = document.getElementById('log-list');
 const mainPanel = document.getElementById('main-panel');
 const devKeypad = document.getElementById('dev-keypad');
 
-let client;
-let currentState = 'LOCKED';
-
 // Initialization
 function init() {
-    addLog('Connecting to MQTT Cloud Broker...', 'info');
+    addLog('Connecting to Backend Server via SSE...', 'info');
     updateUI('LOCKED');
     
-    // Setup MQTT Client
-    client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, "/mqtt", CLIENT_ID);
+    // Connect to Server-Sent Events from local Node.js / Ngrok server
+    const evtSource = new EventSource(`${BACKEND_URL}/api/events`);
     
-    // Set callbacks
-    client.onConnectionLost = onConnectionLost;
-    client.onMessageArrived = onMessageArrived;
-
-    // Connect
-    client.connect({
-        useSSL: true,
-        onSuccess: onConnect,
-        onFailure: (err) => {
-            addLog('MQTT Connection Failed! Retrying...', 'warning');
-            console.error(err);
-            setTimeout(init, 5000);
-        }
-    });
-}
-
-function onConnect() {
-    addLog('Connected to Cloud via HiveMQ', 'success');
-    client.subscribe(TOPIC_STATE);
-}
-
-function onConnectionLost(responseObject) {
-    if (responseObject.errorCode !== 0) {
-        addLog('Connection lost! Reconnecting...', 'warning');
-        setTimeout(init, 2000);
-    }
-}
-
-// When the ESP32 publishes a state change
-function onMessageArrived(message) {
-    const topic = message.destinationName;
-    const payload = message.payloadString;
+    evtSource.onopen = function() {
+        addLog('Connected to Backend Real-Time Stream', 'success');
+    };
     
-    if (topic === TOPIC_STATE) {
-        if (payload !== currentState) {
-            updateUI(payload);
-            
-            if (payload === 'SOMEONE_AT_DOOR') {
-                addLog('Visitor rang the doorbell! 🔔', 'warning');
-            } else if (payload === 'UNLOCKED') {
-                addLog('Visitor entered correct OTP. Door Unlocked 🔓', 'success');
-            } else if (payload === 'LOCKED') {
-                addLog('Door secured 🔒', 'info');
-            } else if (payload === 'OTP_GENERATED') {
-                addLog('ESP32 successfully dispatched OTP via SMS.', 'info');
+    evtSource.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'state') {
+                const payload = data.payload;
+                if (payload !== currentState) {
+                    updateUI(payload);
+                    
+                    if (payload === 'SOMEONE_AT_DOOR') {
+                        addLog('Visitor rang the doorbell! 🔔', 'warning');
+                    } else if (payload === 'UNLOCKED') {
+                        addLog('Visitor entered correct OTP. Door Unlocked 🔓', 'success');
+                    } else if (payload === 'LOCKED') {
+                        addLog('Door secured 🔒', 'info');
+                    } else if (payload === 'OTP_GENERATED') {
+                        addLog('ESP32 successfully dispatched OTP via SMS.', 'info');
+                    }
+                }
             }
+        } catch(e) {
+            console.error("Error parsing SSE data", e);
         }
-    }
+    };
+
+    evtSource.onerror = function(err) {
+        addLog('SSE Connection lost! Retrying...', 'warning');
+    };
 }
 
-// Helper to send commands to the ESP32
-function sendCommand(cmdStr) {
-    if (client.isConnected()) {
-        const message = new Paho.MQTT.Message(cmdStr);
-        message.destinationName = TOPIC_COMMAND;
-        client.send(message);
-    } else {
-        alert("Not connected to Cloud! Wait a moment.");
-    }
+// Map string state to CSS class segment
+function getStateClass(s) {
+    if (s === 'LOCKED') return 'state-locked';
+    if (s === 'SOMEONE_AT_DOOR') return 'state-visitor';
+    if (s === 'OTP_GENERATED') return 'state-otp';
+    if (s === 'UNLOCKED') return 'state-unlocked';
+    return 'state-locked';
+}
+
+function formatTime() {
+    const now = new Date();
+    let h = now.getHours();
+    let m = now.getMinutes();
+    let s = now.getSeconds();
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function addLog(msg, type = 'info') {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>${msg}</span> <span class="time">${formatTime()}</span>`;
+    if (type === 'warning') li.style.color = 'var(--warning)';
+    if (type === 'success') li.style.color = 'var(--success)';
+    logList.prepend(li);
 }
 
 // Update the entire UI based on string state
@@ -138,29 +135,22 @@ function updateUI(stateName) {
     }
 }
 
-// Map string state to CSS class segment
-function getStateClass(s) {
-    if (s === 'LOCKED') return 'state-locked';
-    if (s === 'SOMEONE_AT_DOOR') return 'state-visitor';
-    if (s === 'OTP_GENERATED') return 'state-otp';
-    if (s === 'UNLOCKED') return 'state-unlocked';
-    return 'state-locked';
-}
-
-function formatTime() {
-    const now = new Date();
-    let h = now.getHours();
-    let m = now.getMinutes();
-    let s = now.getSeconds();
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-}
-
-function addLog(msg, type = 'info') {
-    const li = document.createElement('li');
-    li.innerHTML = `<span>${msg}</span> <span class="time">${formatTime()}</span>`;
-    if (type === 'warning') li.style.color = 'var(--warning)';
-    if (type === 'success') li.style.color = 'var(--success)';
-    logList.prepend(li);
+// Helper to send commands to the Backend
+async function sendCommand(cmdStr) {
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/web-command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmdStr })
+        });
+        if (!res.ok) {
+            addLog('Failed to send command to server.', 'warning');
+            alert("Could not send command to the server! Make sure it is running.");
+        }
+    } catch(err) {
+        addLog('Network Error sending command.', 'warning');
+        console.error(err);
+    }
 }
 
 // --- CLOUD ACTIONS ---
